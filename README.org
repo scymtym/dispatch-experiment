@@ -2,19 +2,20 @@
 
   I made the decision tree compiler for other reasons and realized
   that it would make experimenting with the dispatch technique and
-  bechmarking it more comprehensively pretty easily.
+  bechmarking it more comprehensively pretty easy.
 
   The other motivation is making the benchmark more realistic and
   somewhat fairer:
 
-  + put the discriminating function into a funcallable instance in
-    case that introduces additional function call overhead
+  + Put the discriminating function into a funcallable instance in
+    case that introduces additional function call overhead.
 
-  + type-check the argument instead of unsafely extracting the stamp
-    (afaict, e.g. fixnums will not have a rack)
+  + Type-check the argument instead of unsafely extracting the stamp
+    (afaict, e.g. fixnums will not have a rack so that test will be
+    needed).
 
-  + Generate actual decision tree. The simulated dispatch function in
-    the paper
+  + Generate an actual decision tree. The simulated dispatch function
+    in the paper
 
     #+BEGIN_SRC lisp
       (defun yy (instance)
@@ -37,35 +38,36 @@
     case. This executes much faster than a real decision tree.
 
   + Exploit SBCL's new immobile space: SBCL's equivalent of "general
-    instances" in the paper are characterized by "layouts" which are
-    placed in immobile space where the gc does not move them. the idea
-    is to use layout addresses where "stamps" are used in the paper.
+    instances" with class and "rack" pointers in the paper are
+    "instances" and "layouts". The latter are placed in immobile space
+    where the gc does not move them. The idea is to use layout
+    addresses where "stamps" are used in the paper.
 
 * Code
 
   We will define two kinds of generic-function-like things (in the
-  sense that the instances are ~funcallable-standard-object~s and
-  their instance function does generic-function-like dispatch):
+  sense that the instances will be ~funcallable-standard-object~ s and
+  their instance functions will do generic-function-like dispatch):
 
   + ~typep-gf~ :: This uses a ~typep~-based decision procedure and
-                  serve as a base line (in addition two SBCL's actual
+                  serves as a baseline (in addition to SBCL's actual
                   generic function implementation). It is also used
-                  for implementing the second kind of generic function
-                  without going through the actual
+                  for implementing ~layout-gf~ without going through
+                  the actual
                   ~compute-applicable-methods-using-classes~
                   shenanigans.
 
   + ~layout-gf~ :: This is the interesting one. Its dispatch function
                    works by extracting the layout of the generic
                    function argument and taking its address. This
-                   address is used in decision procedure based on the
-                   call history. This is mostly a more fleshed-out,
-                   SBCL-adapted version of the generic function
-                   dispatch presented in the paper.
+                   address is used in a decision procedure based on
+                   the call history. This is mostly a more
+                   fleshed-out, SBCL-adapted version of the generic
+                   function dispatch presented in the paper.
 
 ** Decision Tree Compiler
 
-   Since it will be used in both implementations here is brief
+   Since it will be used in both implementations here is a brief
    demonstration of the decision tree compiler (full code in
    [[file:decision-tree.lisp]], [[file:interval-decision-procedure.lisp]] and
    [[file:typep-decision-procedure.lisp]]):
@@ -77,7 +79,7 @@
          (let ((interface (make-instance 'interval-dispatch :number-var 'number)))
            (make-decision-tree interface '((1 . 5) (0 . 10) (7 . 7) (8 . *)))))
 
-         (print-decision-tree *standard-output* *interval-tree*)
+       (print-decision-tree *standard-output* *interval-tree*)
      #+END_SRC
 
      #+RESULTS:
@@ -98,8 +100,9 @@
      #+end_example
 
      #+BEGIN_SRC lisp :exports both :results value scalar :package dispatch-experiment
-       (emit-decision-tree-code *interval-tree* (lambda (candidates info)
-                                                  `'(:candidates ,candidates :info ,info)))
+       (emit-decision-tree-code
+        ,*interval-tree* (lambda (candidates info)
+                          `'(:candidates ,candidates :info ,info)))
      #+END_SRC
 
      #+RESULTS:
