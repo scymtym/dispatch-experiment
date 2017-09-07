@@ -171,18 +171,189 @@
 
 ** ~typep-gf~
 
-   #+include: typep-generic-function.lisp src lisp
+   #+BEGIN_SRC lisp
+     (cl:in-package #:dispatch-experiment)
 
+     ;;; `typep'-based discriminating function
+
+     (defun make-typep-discriminator-form (types)
+       (let* ((object-var 'object)
+              (interface  (make-instance 'type-discrimination :object-var object-var))
+              (tree       (make-decision-tree interface types)))
+         `(lambda (,object-var)
+            (declare (optimize (speed 3) (debug 0) (safety 0)))
+            ,(emit-decision-tree-code
+              tree (lambda (candidates info)
+                     (declare (ignore info))
+                     `',candidates)))))
+
+     (defun make-typep-discriminator (types)
+       (compile nil (make-typep-discriminator-form types)))
+
+     ;;; Generic function
+
+     (defclass typep-gf (sb-mop:funcallable-standard-object)
+       ((discriminator :accessor discriminator))
+       (:metaclass sb-mop:funcallable-standard-class))
+
+     (defmethod shared-initialize :after ((instance   typep-gf)
+                                          (slot-names t)
+                                          &key
+                                            classes)
+       (sb-mop:set-funcallable-instance-function
+        instance (make-typep-discriminator classes)))
+   #+END_SRC
 
 ** ~layout-gf~
 
-   #+include: layout-generic-function.lisp src lisp
+   #+BEGIN_SRC lisp
+     (cl:in-package #:dispatch-experiment)
+
+     ;;; Layout discrimination
+
+     (defun make-discriminating-function-form (layouts->outcomes miss-form &key assume-instance-p)
+       (let* ((layout-addresses (map 'list (lambda+ ((layout . &ign))
+                                             (sb-vm::get-lisp-obj-address layout))
+                                     layouts->outcomes))
+              (interface        (make-instance 'interval-dispatch :number-var 'address))
+              (tree             (make-decision-tree interface (map 'list (lambda (address)
+                                                                           (cons address address))
+                                                                   layout-addresses))))
+         (format t "Assuming argument is an instance: ~S~%" assume-instance-p)
+         `(lambda (object)
+            (declare (optimize (speed 3) (debug 0) (safety 0)))
+            (let ((address (sb-vm::get-lisp-obj-address ,(if assume-instance-p
+                                                             `(sb-kernel:%instance-layout object)
+                                                             `(sb-kernel:layout-of object)))))
+              ,(emit-decision-tree-code
+                tree
+                (lambda (candidates info)
+                  (declare (ignore info))
+                  (if candidates
+                      `',(map 'list (lambda (address)
+                                      (cdr (elt layouts->outcomes (position (car address) layout-addresses))))
+                              candidates)
+                      miss-form)))))))
+
+     (defun make-discriminating-function (layouts->outcomes miss-form &key assume-instance-p)
+       (compile nil (make-discriminating-function-form
+                     layouts->outcomes miss-form
+                     :assume-instance-p assume-instance-p)))
+
+     ;; Generic function
+
+     (defclass layout-gf (sb-mop:funcallable-standard-object)
+       ((classes       :initarg  :classes
+                       :accessor classes)
+        (call-history  :accessor call-history
+                       :initform '())
+        (discriminator :accessor discriminator))
+       (:metaclass sb-mop:funcallable-standard-class))
+
+     (defun cache-miss (generic-function object)
+       (let ((class (funcall (discriminator generic-function) object)))
+         (push (cons (sb-kernel:layout-of object) class)
+               (call-history generic-function)))
+       (sb-mop:set-funcallable-instance-function
+        generic-function
+        (make-discriminating-function
+         (call-history generic-function)
+         `(cache-miss ,generic-function object)
+         :assume-instance-p (every (lambda+ ((&ign . classes))
+                                     (every (rcurry #'subtypep 'standard-object)
+                                            classes))
+                                   (call-history generic-function))))
+       (funcall generic-function object))
+
+     (defmethod shared-initialize :after ((instance   layout-gf)
+                                          (slot-names t)
+                                          &key
+                                            classes)
+       (setf (discriminator instance) (make-typep-discriminator classes))
+       (sb-mop:set-funcallable-instance-function
+        instance (lambda (object)
+                   (cache-miss instance object))))
+   #+END_SRC
 
 * Results
 
 ** Benchmark for General Lisp Objects
 
-   #+include: benchmark-generic.lisp src lisp
+   #+BEGIN_SRC lisp
+     (cl:in-package #:dispatch-experiment)
+
+     (defgeneric standard-gf (object)
+       (:method ((object number))
+         :number)
+       (:method ((object double-float))
+         :double-float)
+       (:method ((object integer))
+         :integer)
+       (:method ((object symbol))
+         :symbol)
+       (:method ((object cons))
+         :cons)
+       (:method ((object list))
+         :list)
+       (:method ((object null))
+         :null)
+       (:method ((object class))
+         :class)
+       (:method ((object standard-object))
+         :standard-object))
+
+     (defparameter *generic-classes*
+       '(number double-float integer symbol cons list null class standard-object))
+
+     (defun prepare-generic-typep-vs-layout-address-vs-standard-gf ()
+       (let+ ((layout-gf (make-instance 'layout-gf :classes *generic-classes*))
+              (typep-gf  (make-instance 'typep-gf  :classes *generic-classes*))
+              ((&flet call (gf object)
+                 (funcall gf object)
+                 (funcall gf object)))
+              ((&flet calls (gf)
+                 (call gf 1)
+                 (call gf 1.0d0)
+                 (call gf 1.0f0)
+                 (call gf (1+ most-positive-fixnum))
+                 (call gf :foo)
+                 (call gf nil)
+                 (call gf (cons 1 2))
+                 (call gf (find-class 'class))
+                 (call gf #'standard-gf))))
+         ;; Populate call history
+         (calls layout-gf)
+         (calls typep-gf)
+         (calls #'standard-gf)
+
+         (values layout-gf typep-gf)))
+
+     (defun run-generic-typep-vs-layout-address-vs-standard-gf (layout-gf typep-gf)
+       (let+ (((&flet bench (gf object)
+                 (declare (type function gf))
+                 ;; Warm up
+                 (loop :repeat 100 :do (funcall gf object))
+                 ;; Time it
+                 (let ((*trace-output* *standard-output*))
+                   (time (locally (declare (optimize (speed 3) (debug 0) (safety 0)))
+                           (loop :repeat 100000000 :do (funcall gf object))))))))
+         ;; Benchmark runs
+         (format t "object 1~%")
+         (bench layout-gf     1)
+         (bench typep-gf      1)
+         (bench #'standard-gf 1)
+
+         (format t "object nil~%")
+         (bench layout-gf     nil)
+         (bench typep-gf      nil)
+         (bench #'standard-gf nil)
+
+         (format t "object (1 . 2)~%")
+         (bench layout-gf     '(1 . 2))
+         (bench typep-gf      '(1 . 2))
+         (bench #'standard-gf '(1 . 2))))
+
+   #+END_SRC
 
    #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
      (defparameter *generic-layout-gf* nil)
@@ -492,7 +663,70 @@
    that the ~layout-gf~ can assume the argument is an instance when
    extracting the layout.
    
-   #+include: benchmark-generic.lisp src lisp
+   #+BEGIN_SRC lisp
+     (cl:in-package #:dispatch-experiment)
+
+     (progn
+       (defclass a1 () ()) (defclass b1 () ()) (defclass c1 () ()) (defclass d1 () ())
+       (defclass a2 () ()) (defclass b2 () ()) (defclass c2 () ()) (defclass d2 () ())
+       (defclass a3 () ()) (defclass b3 () ()) (defclass c3 () ()) (defclass d3 () ()))
+
+     (defgeneric standard-gf2 (object)
+       (:method ((object a1))
+         :a1)
+       (:method ((object b1))
+         :b1)
+       (:method ((object c1))
+         :c1)
+       (:method ((object d1))
+         :d1)
+       (:method ((object a2))
+         :a2)
+       (:method ((object b2))
+         :b2)
+       (:method ((object c2))
+         :c2)
+       (:method ((object d2))
+         :d2)
+       (:method ((object a3))
+         :a3)
+       (:method ((object b3))
+         :b3)
+       (:method ((object c3))
+         :c3)
+       (:method ((object d3))
+         :d3))
+
+     (defparameter *standard-object-classes*
+       '(a1 b1 c1 d1 a2 b2 c2 d2 a3 b3 c3 d3))
+
+     (defun prepare-standard-object-layout-address-vs-standard-gf ()
+       (let+ ((layout-gf (make-instance 'layout-gf :classes *standard-object-classes*))
+              ;; (typep-gf  (make-instance 'typep-gf  :classes *standard-object-classes*))
+              ((&flet calls (gf)
+                 (map nil (compose (curry #'funcall gf) #'make-instance)
+                      ,*standard-object-classes*))))
+         (calls layout-gf)
+         ;; (calls typep-gf)
+         (calls #'standard-gf2)
+
+         layout-gf))
+
+     (defun run-standard-object-layout-address-vs-standard-gf (layout-gf #+no typep-gf)
+       (let+ (((&flet bench (gf object)
+                 (declare (type sb-mop:funcallable-standard-object gf))
+                 ;; Warm up
+                 (loop :repeat 100 :do (funcall gf object))
+                 ;; Time it
+                 (let ((*trace-output* *standard-output*))
+                   (time (locally (declare (optimize (speed 3) (debug 0) (safety 0)))
+                           (loop :repeat 1000000000 :do (funcall gf object))))))))
+         (let ((object (make-instance 'd2)))
+           (format t "object ~%")
+           (bench layout-gf     object)
+           ;; (bench typep-gf      object)
+           (bench #'standard-gf object))))
+   #+END_SRC
 
    #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
      (defparameter *standard-object-layout-gf*
