@@ -1,0 +1,740 @@
+* Motivation
+
+  I made the decision tree compiler for other reasons and realized
+  that it would make experimenting with the dispatch technique and
+  bechmarking it more comprehensively pretty easily.
+
+  The other motivation is making the benchmark more realistic and
+  somewhat fairer:
+
+  + put the discriminating function into a funcallable instance in
+    case that introduces additional function call overhead
+
+  + type-check the argument instead of unsafely extracting the stamp
+    (afaict, e.g. fixnums will not have a rack)
+
+  + Generate actual decision tree. The simulated dispatch function in
+    the paper
+
+    #+BEGIN_SRC lisp
+      (defun yy (instance)
+        (declare (optimize (safety 0) (speed 3) (debug 0)))
+        (let* ((rack (s-rack instance))
+               (stamp (svref rack 0)))
+          (declare (type fixnum stamp))
+          (cond ((> stamp 1280) (error "1"))
+                ((> stamp 640) (error "2"))
+                ((> stamp 320) (error "3"))
+                ((> stamp 160) (error "4"))
+                ((> stamp 80) (error "5"))
+                ((> stamp 40) (error "6"))
+                ((> stamp 20) (error "7"))
+                ((> stamp 10) (error "8"))
+                (t (svref rack 1)))))
+    #+END_SRC
+
+    compiles to tests which "fall through" in the alternative
+    case. This executes much faster than a real decision tree.
+
+  + Exploit SBCL's new immobile space: SBCL's equivalent of "general
+    instances" in the paper are characterized by "layouts" which are
+    placed in immobile space where the gc does not move them. the idea
+    is to use layout addresses where "stamps" are used in the paper.
+
+* Code
+
+  We will define two kinds of generic-function-like things (in the
+  sense that the instances are ~funcallable-standard-object~s and
+  their instance function does generic-function-like dispatch):
+
+  + ~typep-gf~ :: This uses a ~typep~-based decision procedure and
+                  serve as a base line (in addition two SBCL's actual
+                  generic function implementation). It is also used
+                  for implementing the second kind of generic function
+                  without going through the actual
+                  ~compute-applicable-methods-using-classes~
+                  shenanigans.
+
+  + ~layout-gf~ :: This is the interesting one. Its dispatch function
+                   works by extracting the layout of the generic
+                   function argument and taking its address. This
+                   address is used in decision procedure based on the
+                   call history. This is mostly a more fleshed-out,
+                   SBCL-adapted version of the generic function
+                   dispatch presented in the paper.
+
+** Decision Tree Compiler
+
+   Since it will be used in both implementations here is brief
+   demonstration of the decision tree compiler (full code in
+   [[file:decision-tree.lisp]], [[file:interval-decision-procedure.lisp]] and
+   [[file:typep-decision-procedure.lisp]]):
+
+   + For intervals ::
+
+     #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+       (defparameter *interval-tree*
+         (let ((interface (make-instance 'interval-dispatch :number-var 'number)))
+           (make-decision-tree interface '((1 . 5) (0 . 10) (7 . 7) (8 . *)))))
+
+         (print-decision-tree *standard-output* *interval-tree*)
+     #+END_SRC
+
+     #+RESULTS:
+     #+begin_example
+     (= 7 T)
+     ├─{(0 . 10) (7 . 7)}
+     └─(< 8 T)
+       ├─(< 0 T)
+       │ ├─{}
+       │ └─(< 6 T)
+       │   ├─(< 1 T)
+       │   │ ├─{(0 . 10)}
+       │   │ └─{(0 . 10) (1 . 5)}
+       │   └─{(0 . 10)}
+       └─(< 11 T)
+         ├─{(8 . *) (0 . 10)}
+         └─{(8 . *)}
+     #+end_example
+
+     #+BEGIN_SRC lisp :exports both :results value scalar :package dispatch-experiment
+       (emit-decision-tree-code *interval-tree* (lambda (candidates info)
+                                                  `'(:candidates ,candidates :info ,info)))
+     #+END_SRC
+
+     #+RESULTS:
+     #+begin_example
+     (IF (= NUMBER 7)
+         '(:CANDIDATES ((0 . 10) (7 . 7)) :INFO ((7 7 NIL)))
+         (IF (< NUMBER 8)
+             (IF (< NUMBER 0)
+                 '(:CANDIDATES NIL :INFO ((-4611686018427387904 -1 NIL)))
+                 (IF (< NUMBER 6)
+                     (IF (< NUMBER 1)
+                         '(:CANDIDATES ((0 . 10)) :INFO ((0 0 NIL)))
+                         '(:CANDIDATES ((0 . 10) (1 . 5)) :INFO ((1 5 NIL))))
+                     '(:CANDIDATES ((0 . 10)) :INFO ((6 6 NIL)))))
+             (IF (< NUMBER 11)
+                 '(:CANDIDATES ((8 . *) (0 . 10)) :INFO ((8 10 NIL)))
+                 '(:CANDIDATES ((8 . *)) :INFO ((11 4611686018427387903 NIL))))))
+     #+end_example
+
+
+   + For types ::
+
+     #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+       (defparameter *type-tree*
+         (let ((interface (make-instance 'type-discrimination :object-var 'object)))
+           (make-decision-tree interface '(integer number single-float string class))))
+
+         (print-decision-tree *standard-output* *type-tree*)
+     #+END_SRC
+
+     #+RESULTS:
+     #+begin_example
+     (NUMBER T)
+     ├─(INTEGER T)
+     │ ├─{NUMBER INTEGER}
+     │ └─(SINGLE-FLOAT T)
+     │   ├─{NUMBER SINGLE-FLOAT}
+     │   └─{NUMBER}
+     └─(STRING T)
+       ├─{STRING}
+       └─(CLASS T)
+         ├─{CLASS}
+         └─{}
+     #+end_example
+
+     #+BEGIN_SRC lisp :exports both :results value scalar :package dispatch-experiment
+       (emit-decision-tree-code *type-tree* (lambda (candidates info)
+                                                  `'(:candidates ,candidates :info ,info)))
+     #+END_SRC
+
+     #+RESULTS:
+     #+begin_example
+     (IF (TYPEP OBJECT 'NUMBER)
+         (IF (TYPEP OBJECT 'INTEGER)
+             '(:CANDIDATES (NUMBER INTEGER) :INFO ((AND INTEGER NUMBER)))
+             (IF (TYPEP OBJECT 'SINGLE-FLOAT)
+                 '(:CANDIDATES (NUMBER SINGLE-FLOAT) :INFO
+                   ((AND SINGLE-FLOAT (NOT INTEGER) NUMBER)))
+                 '(:CANDIDATES (NUMBER) :INFO
+                   ((AND (NOT SINGLE-FLOAT) (NOT INTEGER) NUMBER)))))
+         (IF (TYPEP OBJECT 'STRING)
+             '(:CANDIDATES (STRING) :INFO ((AND STRING (NOT NUMBER))))
+             (IF (TYPEP OBJECT 'CLASS)
+                 '(:CANDIDATES (CLASS) :INFO
+                   ((AND CLASS (NOT STRING) (NOT NUMBER))))
+                 '(:CANDIDATES NIL :INFO
+                   ((AND (NOT CLASS) (NOT STRING) (NOT NUMBER)))))))
+     #+end_example
+
+** ~typep-gf~
+
+   #+include: typep-generic-function.lisp src lisp
+
+
+** ~layout-gf~
+
+   #+include: layout-generic-function.lisp src lisp
+
+* Results
+
+** Benchmark for General Lisp Objects
+
+   #+include: benchmark-generic.lisp src lisp
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (defparameter *generic-layout-gf* nil)
+     (defparameter *generic-typep-gf* nil)
+     (setf (values *generic-layout-gf* *generic-typep-gf*)
+           (prepare-generic-typep-vs-layout-address-vs-standard-gf))
+   #+END_SRC
+
+   #+RESULTS:
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+   : Assuming argument is an instance: NIL
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (let* ((layout-addresses (map 'list (lambda+ ((layout . &ign))
+                                           (sb-vm::get-lisp-obj-address layout))
+                                   (call-history *generic-layout-gf*)))
+            (interface        (make-instance 'interval-dispatch :number-var 'address))
+            (tree             (make-decision-tree interface (map 'list (lambda (address)
+                                                                         (cons address address))
+                                                                 layout-addresses))))
+
+       (format t "Layout addresses:~%~{~2@T~{~D~%~4@T~A~%~4@T~A~}~%~}"
+               (map 'list (lambda+ ((layout . classes))
+                            (list (sb-vm::get-lisp-obj-address layout) layout classes))
+                    (call-history *generic-layout-gf*)))
+       (print-decision-tree *standard-output* tree))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   Layout addresses:
+     540670723
+       #<LAYOUT for STANDARD-GENERIC-FUNCTION {2039FB03}>
+       (STANDARD-OBJECT)
+     540725507
+       #<LAYOUT for STANDARD-CLASS {203AD103}>
+       (STANDARD-OBJECT CLASS)
+     540599811
+       #<LAYOUT for CONS {2038E603}>
+       (CONS LIST)
+     540097027
+       #<LAYOUT for NULL {20313A03}>
+       (SYMBOL LIST NULL)
+     540096771
+       #<LAYOUT for SYMBOL {20313903}>
+       (SYMBOL)
+     540590851
+       #<LAYOUT for BIGNUM {2038C303}>
+       (NUMBER INTEGER)
+     540581123
+       #<LAYOUT for SINGLE-FLOAT {20389D03}>
+       (NUMBER)
+     540581379
+       #<LAYOUT for DOUBLE-FLOAT {20389E03}>
+       (NUMBER DOUBLE-FLOAT)
+     540590595
+       #<LAYOUT for FIXNUM {2038C203}>
+       (NUMBER INTEGER)
+   (< 540590596 T)
+   ├─(< 540581379 T)
+   │ ├─(= 540581123 T)
+   │ │ ├─{(540581123 . 540581123)}
+   │ │ └─(= 540096771 T)
+   │ │   ├─{(540096771 . 540096771)}
+   │ │   └─(= 540097027 T)
+   │ │     ├─{(540097027 . 540097027)}
+   │ │     └─{}
+   │ └─(< 540590595 T)
+   │   ├─(< 540581380 T)
+   │   │ ├─{(540581379 . 540581379)}
+   │   │ └─{}
+   │   └─{(540590595 . 540590595)}
+   └─(< 540599812 T)
+     ├─(< 540599811 T)
+     │ ├─(= 540590851 T)
+     │ │ ├─{(540590851 . 540590851)}
+     │ │ └─{}
+     │ └─{(540599811 . 540599811)}
+     └─(= 540725507 T)
+       ├─{(540725507 . 540725507)}
+       └─(= 540670723 T)
+         ├─{(540670723 . 540670723)}
+         └─{}
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (sb-disassem:disassemble-code-component
+       (sb-kernel:funcallable-instance-fun *generic-layout-gf*))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   ; Size: 528 bytes. Origin: #x1007FB5260 (segment 1 of 2)
+   ; 260:       .ENTRY (LAMBDA (OBJECT))()                       ; FUNCTION
+   ; 290:       8F4508           POP QWORD PTR [RBP+8]
+   ; 293:       488D65F8         LEA RSP, [RBP-8]
+   ; 297:       488BCA           MOV RCX, RDX
+   ; Origin #x1007FB529A (segment 2 of 2)
+   ; 29A:       8D41FD           LEA EAX, [RCX-3]                ; no-arg-parsing entry point
+   ; 29D:       A80F             TEST AL, 15
+   ; 29F:       0F84C3010000     JEQ L20
+   ; 2A5:       8D41F5           LEA EAX, [RCX-11]
+   ; 2A8:       A80F             TEST AL, 15
+   ; 2AA:       750A             JNE L0
+   ; 2AC:       8079F539         CMP BYTE PTR [RCX-11], 57
+   ; 2B0:       0F84AA010000     JEQ L19
+   ; 2B6: L0:   4881F917001020   CMP RCX, 537919511
+   ; 2BD:       0F8565010000     JNE L15
+   ; 2C3:       488B150EFFFFFF   MOV RDX, [RIP-242]              ; #<SB-KERNEL:LAYOUT for NULL {20313A03}>
+   ; 2CA: L1:   4881FA04C23820   CMP RDX, 540590596
+   ; 2D1:       0F83B5000000     JNB L9
+   ; 2D7:       488D1C12         LEA RBX, [RDX+RDX]
+   ; 2DB:       4881FB063C7140   CMP RBX, 1081162758
+   ; 2E2:       7C4B             JL L5
+   ; 2E4:       488D1C12         LEA RBX, [RDX+RDX]
+   ; 2E8:       4881FB06847140   CMP RBX, 1081181190
+   ; 2EF:       7C0D             JL L3
+   ; 2F1:       488B15E8FEFFFF   MOV RDX, [RIP-280]              ; '((NUMBER
+                                                                 ;    INTEGER))
+   ; 2F8: L2:   488BE5           MOV RSP, RBP
+   ; 2FB:       F8               CLC
+   ; 2FC:       5D               POP RBP
+   ; 2FD:       C3               RET
+   ; 2FE: L3:   48D1E2           SHL RDX, 1
+   ; 301:       4881FA083C7140   CMP RDX, 1081162760
+   ; 308:       7D09             JNL L4
+   ; 30A:       488B15D7FEFFFF   MOV RDX, [RIP-297]              ; '((NUMBER
+                                                                 ;    DOUBLE-FLOAT))
+   ; 311:       EBE5             JMP L2
+   ; 313: L4:   488B15D6FEFFFF   MOV RDX, [RIP-298]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100785FD3B}>
+   ; 31A:       488BF9           MOV RDI, RCX
+   ; 31D:       488B05D4FEFFFF   MOV RAX, [RIP-300]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 324:       B904000000       MOV ECX, 4
+   ; 329:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 32C:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 32F: L5:   488D1C12         LEA RBX, [RDX+RDX]
+   ; 333:       4881FB063A7140   CMP RBX, 1081162246
+   ; 33A:       7509             JNE L6
+   ; 33C:       488B15BDFEFFFF   MOV RDX, [RIP-323]              ; '((NUMBER))
+   ; 343:       EBB3             JMP L2
+   ; 345: L6:   488D1C12         LEA RBX, [RDX+RDX]
+   ; 349:       4881FB06726240   CMP RBX, 1080193542
+   ; 350:       7509             JNE L7
+   ; 352:       488B15AFFEFFFF   MOV RDX, [RIP-337]              ; '((SYMBOL))
+   ; 359:       EB9D             JMP L2
+   ; 35B: L7:   48D1E2           SHL RDX, 1
+   ; 35E:       4881FA06746240   CMP RDX, 1080194054
+   ; 365:       7509             JNE L8
+   ; 367:       488B15A2FEFFFF   MOV RDX, [RIP-350]              ; '((SYMBOL LIST
+                                                                 ;    NULL))
+   ; 36E:       EB88             JMP L2
+   ; 370: L8:   488B15A1FEFFFF   MOV RDX, [RIP-351]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100785FD3B}>
+   ; 377:       488BF9           MOV RDI, RCX
+   ; 37A:       488B0577FEFFFF   MOV RAX, [RIP-393]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 381:       B904000000       MOV ECX, 4
+   ; 386:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 389:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 38C: L9:   4881FA04E63820   CMP RDX, 540599812
+   ; 393:       7246             JB L12
+   ; 395:       4881FA03D13A20   CMP RDX, 540725507
+   ; 39C:       750C             JNE L10
+   ; 39E:       488B157BFEFFFF   MOV RDX, [RIP-389]              ; '((STANDARD-OBJECT
+                                                                 ;    CLASS))
+   ; 3A5:       E94EFFFFFF       JMP L2
+   ; 3AA: L10:  4881FA03FB3920   CMP RDX, 540670723
+   ; 3B1:       750C             JNE L11
+   ; 3B3:       488B156EFEFFFF   MOV RDX, [RIP-402]              ; '((STANDARD-OBJECT))
+   ; 3BA:       E939FFFFFF       JMP L2
+   ; 3BF: L11:  488B156AFEFFFF   MOV RDX, [RIP-406]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100785FD3B}>
+   ; 3C6:       488BF9           MOV RDI, RCX
+   ; 3C9:       488B0528FEFFFF   MOV RAX, [RIP-472]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 3D0:       B904000000       MOV ECX, 4
+   ; 3D5:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 3D8:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 3DB: L12:  488D1C12         LEA RBX, [RDX+RDX]
+   ; 3DF:       4881FB06CC7140   CMP RBX, 1081199622
+   ; 3E6:       7C0C             JL L13
+   ; 3E8:       488B1549FEFFFF   MOV RDX, [RIP-439]              ; '((CONS LIST))
+   ; 3EF:       E904FFFFFF       JMP L2
+   ; 3F4: L13:  48D1E2           SHL RDX, 1
+   ; 3F7:       4881FA06867140   CMP RDX, 1081181702
+   ; 3FE:       750C             JNE L14
+   ; 400:       488B1539FEFFFF   MOV RDX, [RIP-455]              ; '((NUMBER
+                                                                 ;    INTEGER))
+   ; 407:       E9ECFEFFFF       JMP L2
+   ; 40C: L14:  488B1535FEFFFF   MOV RDX, [RIP-459]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100785FD3B}>
+   ; 413:       488BF9           MOV RDI, RCX
+   ; 416:       488B05DBFDFFFF   MOV RAX, [RIP-549]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 41D:       B904000000       MOV ECX, 4
+   ; 422:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 425:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 428: L15:  0FB6C1           MOVZX EAX, CL
+   ; 42B:       240F             AND AL, 15
+   ; 42D:       3C0F             CMP AL, 15
+   ; 42F:       7417             JEQ L17
+   ; 431:       3C0B             CMP AL, 11
+   ; 433:       740D             JEQ L16
+   ; 435:       A801             TEST AL, 1
+   ; 437:       7413             JEQ L18
+   ; 439:       A802             TEST AL, 2
+   ; 43B:       750F             JNE L18
+   ; 43D:       0FB6C1           MOVZX EAX, CL
+   ; 440:       EB0A             JMP L18
+   ; 442: L16:  0FB641F5         MOVZX EAX, BYTE PTR [RCX-11]
+   ; 446:       EB04             JMP L18
+   ; 448: L17:  0FB641F1         MOVZX EAX, BYTE PTR [RCX-15]
+   ; 44C: L18:  48D1E0           SHL RAX, 1
+   ; 44F:       488B15FAFDFFFF   MOV RDX, [RIP-518]              ; #(#<SB-KERNEL:LAYOUT for FIXNUM {2038C203}>
+                                                                 ;   #<SB-KERNEL:LAYOUT for SB-KERNEL::RANDOM-CLASS {20389503}> ..)
+   ; 456:       488B548201       MOV RDX, [RDX+RAX*4+1]
+   ; 45B:       E96AFEFFFF       JMP L1
+   ; 460: L19:  8B51F9           MOV EDX, [RCX-7]
+   ; 463:       E962FEFFFF       JMP L1
+   ; 468: L20:  8B5101           MOV EDX, [RCX+1]
+   ; 46B:       E95AFEFFFF       JMP L1
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (run-generic-typep-vs-layout-address-vs-standard-gf 
+      *generic-layout-gf* *generic-typep-gf*)
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   object 1
+   Evaluation took:
+     0.568 seconds of real time
+     0.567223 seconds of total run time (0.567197 user, 0.000026 system)
+     99.82% CPU
+     1,698,347,484 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.423 seconds of real time
+     0.423581 seconds of total run time (0.423556 user, 0.000025 system)
+     100.24% CPU
+     1,267,757,316 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.596 seconds of real time
+     0.596865 seconds of total run time (0.596765 user, 0.000100 system)
+     100.17% CPU
+     1,786,313,655 processor cycles
+     0 bytes consed
+
+   object nil
+   Evaluation took:
+     0.802 seconds of real time
+     0.743110 seconds of total run time (0.739438 user, 0.003672 system)
+     92.64% CPU
+     2,397,590,715 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.918 seconds of real time
+     0.916761 seconds of total run time (0.912808 user, 0.003953 system)
+     99.89% CPU
+     2,748,152,046 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.522 seconds of real time
+     0.522147 seconds of total run time (0.522147 user, 0.000000 system)
+     100.00% CPU
+     1,562,629,530 processor cycles
+     0 bytes consed
+
+   object (1 . 2)
+   Evaluation took:
+     0.692 seconds of real time
+     0.690659 seconds of total run time (0.690659 user, 0.000000 system)
+     99.86% CPU
+     2,069,846,151 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.686 seconds of real time
+     0.686639 seconds of total run time (0.686464 user, 0.000175 system)
+     100.15% CPU
+     2,054,913,891 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     0.622 seconds of real time
+     0.621589 seconds of total run time (0.621589 user, 0.000000 system)
+     100.00% CPU
+     1,860,226,368 processor cycles
+     0 bytes consed
+
+   #+end_example
+
+** Benchmark for ~standard-object~ instances
+
+   As shown above, the significance of this benchmark lies in the fact
+   that the ~layout-gf~ can assume the argument is an instance when
+   extracting the layout.
+   
+   #+include: benchmark-generic.lisp src lisp
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (defparameter *standard-object-layout-gf*
+       (prepare-standard-object-layout-address-vs-standard-gf))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   Assuming argument is an instance: T
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (let* ((layout-addresses (map 'list (lambda+ ((layout . &ign))
+                                           (sb-vm::get-lisp-obj-address layout))
+                                   (call-history *standard-object-layout-gf*)))
+            (interface        (make-instance 'interval-dispatch :number-var 'address))
+            (tree             (make-decision-tree interface (map 'list (lambda (address)
+                                                                         (cons address address))
+                                                                 layout-addresses))))
+
+       (format t "Layout addresses:~%~{~2@T~{~D~%~4@T~A~%~4@T~A~}~%~}"
+               (map 'list (lambda+ ((layout . classes))
+                            (list (sb-vm::get-lisp-obj-address layout) layout classes))
+                    (call-history *standard-object-layout-gf*)))
+       (print-decision-tree *standard-output* tree))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   Layout addresses:
+     541485827
+       #<LAYOUT for D3 {20466B03}>
+       (D3)
+     541485571
+       #<LAYOUT for C3 {20466A03}>
+       (C3)
+     541485315
+       #<LAYOUT for B3 {20466903}>
+       (B3)
+     541485059
+       #<LAYOUT for A3 {20466803}>
+       (A3)
+     541484803
+       #<LAYOUT for D2 {20466703}>
+       (D2)
+     541484547
+       #<LAYOUT for C2 {20466603}>
+       (C2)
+     541484291
+       #<LAYOUT for B2 {20466503}>
+       (B2)
+     541484035
+       #<LAYOUT for A2 {20466403}>
+       (A2)
+     541483779
+       #<LAYOUT for D1 {20466303}>
+       (D1)
+     541483523
+       #<LAYOUT for C1 {20466203}>
+       (C1)
+     541483267
+       #<LAYOUT for B1 {20466103}>
+       (B1)
+     541483011
+       #<LAYOUT for A1 {20466003}>
+       (A1)
+   (< 541484292 T)
+   ├─(< 541483524 T)
+   │ ├─(< 541483523 T)
+   │ │ ├─(= 541483011 T)
+   │ │ │ ├─{(541483011 . 541483011)}
+   │ │ │ └─(= 541483267 T)
+   │ │ │   ├─{(541483267 . 541483267)}
+   │ │ │   └─{}
+   │ │ └─{(541483523 . 541483523)}
+   │ └─(< 541484291 T)
+   │   ├─(= 541483779 T)
+   │   │ ├─{(541483779 . 541483779)}
+   │   │ └─(= 541484035 T)
+   │   │   ├─{(541484035 . 541484035)}
+   │   │   └─{}
+   │   └─{(541484291 . 541484291)}
+   └─(< 541485060 T)
+     ├─(< 541485059 T)
+     │ ├─(= 541484547 T)
+     │ │ ├─{(541484547 . 541484547)}
+     │ │ └─(= 541484803 T)
+     │ │   ├─{(541484803 . 541484803)}
+     │ │   └─{}
+     │ └─{(541485059 . 541485059)}
+     └─(= 541485315 T)
+       ├─{(541485315 . 541485315)}
+       └─(= 541485571 T)
+         ├─{(541485571 . 541485571)}
+         └─(= 541485827 T)
+           ├─{(541485827 . 541485827)}
+           └─{}
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (sb-disassem:disassemble-code-component
+       (sb-kernel:funcallable-instance-fun *standard-object-layout-gf*))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   ; Size: 477 bytes. Origin: #x1002DC5EA0 (segment 1 of 2)
+   ; 5EA0:       .ENTRY (LAMBDA (OBJECT))()                      ; FUNCTION
+   ; 5ED0:       8F4508           POP QWORD PTR [RBP+8]
+   ; 5ED3:       488D65F8         LEA RSP, [RBP-8]
+   ; 5ED7:       488BCA           MOV RCX, RDX
+   ; Origin #x1002DC5EDA (segment 2 of 2)
+   ; 5EDA:       8B4101           MOV EAX, [RCX+1]               ; no-arg-parsing entry point
+   ; 5EDD:       483D04654620     CMP RAX, 541484292
+   ; 5EE3:       0F83CF000000     JNB L8
+   ; 5EE9:       488D1400         LEA RDX, [RAX+RAX]
+   ; 5EED:       4881FA08C48C40   CMP RDX, 1082967048
+   ; 5EF4:       7C63             JL L4
+   ; 5EF6:       488D1400         LEA RDX, [RAX+RAX]
+   ; 5EFA:       4881FA06CA8C40   CMP RDX, 1082968582
+   ; 5F01:       7C10             JL L1
+   ; 5F03:       488B0D0EFFFFFF   MOV RCX, [RIP-242]             ; '((B2))
+   ; 5F0A: L0:   488BD1           MOV RDX, RCX
+   ; 5F0D:       488BE5           MOV RSP, RBP
+   ; 5F10:       F8               CLC
+   ; 5F11:       5D               POP RBP
+   ; 5F12:       C3               RET
+   ; 5F13: L1:   488D1400         LEA RDX, [RAX+RAX]
+   ; 5F17:       4881FA06C68C40   CMP RDX, 1082967558
+   ; 5F1E:       7509             JNE L2
+   ; 5F20:       488B0DF9FEFFFF   MOV RCX, [RIP-263]             ; '((D1))
+   ; 5F27:       EBE1             JMP L0
+   ; 5F29: L2:   48D1E0           SHL RAX, 1
+   ; 5F2C:       483D06C88C40     CMP RAX, 1082968070
+   ; 5F32:       7509             JNE L3
+   ; 5F34:       488B0DEDFEFFFF   MOV RCX, [RIP-275]             ; '((A2))
+   ; 5F3B:       EBCD             JMP L0
+   ; 5F3D: L3:   488B15ECFEFFFF   MOV RDX, [RIP-276]             ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100837B74B}>
+   ; 5F44:       488BF9           MOV RDI, RCX
+   ; 5F47:       488B05EAFEFFFF   MOV RAX, [RIP-278]             ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 5F4E:       B904000000       MOV ECX, 4
+   ; 5F53:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 5F56:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 5F59: L4:   488D1400         LEA RDX, [RAX+RAX]
+   ; 5F5D:       4881FA06C48C40   CMP RDX, 1082967046
+   ; 5F64:       7C09             JL L5
+   ; 5F66:       488B0DD3FEFFFF   MOV RCX, [RIP-301]             ; '((C1))
+   ; 5F6D:       EB9B             JMP L0
+   ; 5F6F: L5:   488D1400         LEA RDX, [RAX+RAX]
+   ; 5F73:       4881FA06C08C40   CMP RDX, 1082966022
+   ; 5F7A:       7509             JNE L6
+   ; 5F7C:       488B0DC5FEFFFF   MOV RCX, [RIP-315]             ; '((A1))
+   ; 5F83:       EB85             JMP L0
+   ; 5F85: L6:   48D1E0           SHL RAX, 1
+   ; 5F88:       483D06C28C40     CMP RAX, 1082966534
+   ; 5F8E:       750C             JNE L7
+   ; 5F90:       488B0DB9FEFFFF   MOV RCX, [RIP-327]             ; '((B1))
+   ; 5F97:       E96EFFFFFF       JMP L0
+   ; 5F9C: L7:   488B15B5FEFFFF   MOV RDX, [RIP-331]             ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100837B74B}>
+   ; 5FA3:       488BF9           MOV RDI, RCX
+   ; 5FA6:       488B058BFEFFFF   MOV RAX, [RIP-373]             ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 5FAD:       B904000000       MOV ECX, 4
+   ; 5FB2:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 5FB5:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 5FB8: L8:   483D04684620     CMP RAX, 541485060
+   ; 5FBE:       7258             JB L12
+   ; 5FC0:       483D03694620     CMP RAX, 541485315
+   ; 5FC6:       750C             JNE L9
+   ; 5FC8:       488B0D91FEFFFF   MOV RCX, [RIP-367]             ; '((B3))
+   ; 5FCF:       E936FFFFFF       JMP L0
+   ; 5FD4: L9:   483D036A4620     CMP RAX, 541485571
+   ; 5FDA:       750C             JNE L10
+   ; 5FDC:       488B0D85FEFFFF   MOV RCX, [RIP-379]             ; '((C3))
+   ; 5FE3:       E922FFFFFF       JMP L0
+   ; 5FE8: L10:  483D036B4620     CMP RAX, 541485827
+   ; 5FEE:       750C             JNE L11
+   ; 5FF0:       488B0D79FEFFFF   MOV RCX, [RIP-391]             ; '((D3))
+   ; 5FF7:       E90EFFFFFF       JMP L0
+   ; 5FFC: L11:  488B1575FEFFFF   MOV RDX, [RIP-395]             ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100837B74B}>
+   ; 6003:       488BF9           MOV RDI, RCX
+   ; 6006:       488B052BFEFFFF   MOV RAX, [RIP-469]             ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 600D:       B904000000       MOV ECX, 4
+   ; 6012:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 6015:       FF6009           JMP QWORD PTR [RAX+9]
+   ; 6018: L12:  488D1400         LEA RDX, [RAX+RAX]
+   ; 601C:       4881FA06D08C40   CMP RDX, 1082970118
+   ; 6023:       7C0C             JL L13
+   ; 6025:       488B0D54FEFFFF   MOV RCX, [RIP-428]             ; '((A3))
+   ; 602C:       E9D9FEFFFF       JMP L0
+   ; 6031: L13:  488D1400         LEA RDX, [RAX+RAX]
+   ; 6035:       4881FA06CC8C40   CMP RDX, 1082969094
+   ; 603C:       750C             JNE L14
+   ; 603E:       488B0D43FEFFFF   MOV RCX, [RIP-445]             ; '((C2))
+   ; 6045:       E9C0FEFFFF       JMP L0
+   ; 604A: L14:  48D1E0           SHL RAX, 1
+   ; 604D:       483D06CE8C40     CMP RAX, 1082969606
+   ; 6053:       750C             JNE L15
+   ; 6055:       488B0D34FEFFFF   MOV RCX, [RIP-460]             ; '((D2))
+   ; 605C:       E9A9FEFFFF       JMP L0
+   ; 6061: L15:  488B1530FEFFFF   MOV RDX, [RIP-464]             ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {100837B74B}>
+   ; 6068:       488BF9           MOV RDI, RCX
+   ; 606B:       488B05C6FDFFFF   MOV RAX, [RIP-570]             ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; 6072:       B904000000       MOV ECX, 4
+   ; 6077:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; 607A:       FF6009           JMP QWORD PTR [RAX+9]
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (run-standard-object-layout-address-vs-standard-gf
+      *standard-object-layout-gf*)
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   object 
+   Evaluation took:
+     5.221 seconds of real time
+     5.196544 seconds of total run time (5.196544 user, 0.000000 system)
+     99.54% CPU
+     15,625,516,013 processor cycles
+     3,456 bytes consed
+
+   Evaluation took:
+     5.154 seconds of real time
+     5.135624 seconds of total run time (5.135547 user, 0.000077 system)
+     99.65% CPU
+     15,426,919,173 processor cycles
+     1,216 bytes consed
+
+   #+end_example
