@@ -1,6 +1,6 @@
 (cl:in-package #:dispatch-experiment)
 
-;;; Protocol
+;;; Tree Construction Protocol
 
 (defgeneric map-possible-tests (interface function previous-tests candidates)
   (:documentation
@@ -14,13 +14,30 @@
   (:documentation
    "TODO"))
 
-(defgeneric emit-test (interface test)
-  (:documentation
-   "Return code for performing TEST against VARIABLE."))
-
 (defgeneric classify-candidate (interface tests candidate)
   (:documentation
    "TODO"))
+
+;;; Code generation
+
+(defgeneric emit-decision-using-node (interface node recurse)
+  (:documentation
+   "Emit code for decision node NODE.
+
+    RECURSE can be called on the \"then\" and \"else\" child to obtain
+    the respective code."))
+
+(defgeneric emit-decision (interface test then else recurse)
+  (:documentation
+   "Return code for executing the decision consisting of TEST, THEN
+    and ELSE.
+
+    RECURSE can be called on THEN and ELSE to obtain the respective
+    code."))
+
+(defgeneric emit-test (interface test)
+  (:documentation
+   "Return code for performing TEST against VARIABLE."))
 
 ;;; Default behavior
 
@@ -33,6 +50,21 @@
 
 (defmethod tests-info ((interface t) (tests list))
   nil)
+
+(defmethod emit-decision-using-node ((interface t)
+                                     (node      decision)
+                                     (recurse   function))
+  (let+ (((&structure-r/o decision- test then else) node))
+    (emit-decision interface test then else recurse)))
+
+(defmethod emit-decision ((interface t)
+                          (test      t)
+                          (then      t)
+                          (else      t)
+                          (recurse   function))
+  `(if ,(emit-test interface test)
+       ,(funcall recurse then)
+       ,(funcall recurse else)))
 
 ;;; Test selection
 
@@ -127,12 +159,17 @@
 
 (defun make-decision-tree (interface candidates
                            &key
-                             (previous-tests '())
-                             (score          #'balance-and-reduction)
-                             (make-leaf      (lambda (interface tests candidates)
-                                               (let ((info (tests-info interface tests)))
-                                                 (make-leaf interface candidates info)))))
-  (let+ ((make-leaf (ensure-function make-leaf))
+                           (previous-tests '())
+                           (score          #'balance-and-reduction)
+                           (make-decision  (lambda (interface test then else)
+                                             (make-decision interface test then else)))
+                           (make-leaf      (lambda (interface tests candidates)
+                                             (let ((info (tests-info interface tests)))
+                                               (make-leaf interface candidates info)))))
+  (let+ ((make-decision (ensure-function make-decision))
+         ((&flet make-decision (test then else)
+            (funcall make-decision interface test then else)))
+         (make-leaf (ensure-function make-leaf))
          ((&flet make-leaf (tests candidates)
             (funcall make-leaf interface tests candidates)))
          ((&labels rec (tests candidates)
@@ -152,7 +189,6 @@
                     (make-leaf tests candidates))
                    (t
                     (make-decision
-                     interface
                      test
                      (rec (list* test         tests) positive)
                      (rec (list* test/negated tests) negative))))))))))
@@ -162,10 +198,7 @@
   (let+ (((&labels rec (node)
             (etypecase node
               (decision
-               (let+ (((&structure-r/o decision- interface test then else) node))
-                 `(if ,(emit-test interface test)
-                      ,(rec then)
-                      ,(rec else))))
+               (emit-decision-using-node (node-interface node) node #'rec))
               (leaf
                (let+ (((&structure-r/o leaf- info candidates) node))
                  (funcall cont candidates info)))))))
