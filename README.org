@@ -77,51 +77,48 @@
      #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
        (defparameter *interval-tree*
          (let ((interface (make-instance 'interval-dispatch :number-var 'number)))
-           (make-decision-tree interface '((1 . 5) (0 . 10) (7 . 7) (8 . *)))))
+           (make-decision-tree interface '((1 . 5) (0 . 10) (7 . 7) (8 . *))
+                               :previous-tests '((< 0 nil)))))
 
        (print-decision-tree *interval-tree*)
      #+END_SRC
 
      #+RESULTS:
      #+begin_example
-     (= 7 T)
-     ├─{(0 . 10) (7 . 7)}
-     └─(< 8 T)
-       ├─(< 0 T)
-       │ ├─{}
-       │ └─(< 6 T)
-       │   ├─(< 1 T)
-       │   │ ├─{(0 . 10)}
-       │   │ └─{(0 . 10) (1 . 5)}
-       │   └─{(0 . 10)}
-       └─(< 11 T)
-         ├─{(8 . *) (0 . 10)}
-         └─{(8 . *)}
+     (< 8 T)
+     ├─(< 7 T)
+     │ ├─(< 6 T)
+     │ │ ├─(< 1 T)
+     │ │ │ ├─{(0 . 10)}
+     │ │ │ └─{(0 . 10) (1 . 5)}
+     │ │ └─{(0 . 10)}
+     │ └─{(0 . 10) (7 . 7)}
+     └─(< 11 T)
+       ├─{(8 . *) (0 . 10)}
+       └─{(8 . *)}
      #+end_example
 
-     #+BEGIN_SRC lisp :exports both :results value scalar :package dispatch-experiment
+     #+BEGIN_SRC lisp :exports both :results value scalar code :package dispatch-experiment
        (emit-decision-tree-code
         ,*interval-tree* (lambda (candidates info)
                           `'(:candidates ,candidates :info ,info)))
      #+END_SRC
 
      #+RESULTS:
-     #+begin_example
-     (IF (= NUMBER 7)
-         '(:CANDIDATES ((0 . 10) (7 . 7)) :INFO ((7 7 NIL)))
-         (IF (< NUMBER 8)
-             (IF (< NUMBER 0)
-                 '(:CANDIDATES NIL :INFO ((-4611686018427387904 -1 NIL)))
-                 (IF (< NUMBER 6)
-                     (IF (< NUMBER 1)
-                         '(:CANDIDATES ((0 . 10)) :INFO ((0 0 NIL)))
-                         '(:CANDIDATES ((0 . 10) (1 . 5)) :INFO ((1 5 NIL))))
-                     '(:CANDIDATES ((0 . 10)) :INFO ((6 6 NIL)))))
-             (IF (< NUMBER 11)
-                 '(:CANDIDATES ((8 . *) (0 . 10)) :INFO ((8 10 NIL)))
-                 '(:CANDIDATES ((8 . *)) :INFO ((11 4611686018427387903 NIL))))))
-     #+end_example
+     #+BEGIN_SRC lisp
 
+     (IF (< NUMBER 8)
+         (IF (< NUMBER 7)
+             (IF (< NUMBER 6)
+                 (IF (< NUMBER 1)
+                     '(:CANDIDATES ((0 . 10)) :INFO ((0 0 NIL)))
+                     '(:CANDIDATES ((0 . 10) (1 . 5)) :INFO ((1 5 NIL))))
+                 '(:CANDIDATES ((0 . 10)) :INFO ((6 6 NIL))))
+             '(:CANDIDATES ((0 . 10) (7 . 7)) :INFO ((7 7 NIL))))
+         (IF (< NUMBER 11)
+             '(:CANDIDATES ((8 . *) (0 . 10)) :INFO ((8 10 NIL)))
+             '(:CANDIDATES ((8 . *)) :INFO ((11 4611686018427387903 NIL)))))
+     #+END_SRC
 
    + For types ::
 
@@ -148,13 +145,14 @@
          └─{}
      #+end_example
 
-     #+BEGIN_SRC lisp :exports both :results value scalar :package dispatch-experiment
+     #+BEGIN_SRC lisp :exports both :results value scalar code :package dispatch-experiment
        (emit-decision-tree-code *type-tree* (lambda (candidates info)
                                                   `'(:candidates ,candidates :info ,info)))
      #+END_SRC
 
      #+RESULTS:
-     #+begin_example
+     #+BEGIN_SRC lisp
+
      (IF (TYPEP OBJECT 'NUMBER)
          (IF (TYPEP OBJECT 'INTEGER)
              '(:CANDIDATES (NUMBER INTEGER) :INFO ((AND INTEGER NUMBER)))
@@ -170,7 +168,7 @@
                    ((AND CLASS (NOT STRING) (NOT NUMBER))))
                  '(:CANDIDATES NIL :INFO
                    ((AND (NOT CLASS) (NOT STRING) (NOT NUMBER)))))))
-     #+end_example
+     #+END_SRC
 
 ** ~typep-gf~
 
