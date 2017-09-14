@@ -586,7 +586,7 @@
    #+end_example
 
    #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
-     (run-generic-typep-vs-layout-address-vs-standard-gf 
+     (run-generic-typep-vs-layout-address-vs-standard-gf
       *generic-layout-gf* *generic-typep-gf*)
    #+END_SRC
 
@@ -665,7 +665,7 @@
    As shown above, the significance of this benchmark lies in the fact
    that the ~layout-gf~ can assume the argument is an instance when
    extracting the layout.
-   
+
    #+BEGIN_SRC lisp
      (cl:in-package #:dispatch-experiment)
 
@@ -959,7 +959,7 @@
 
    #+RESULTS:
    #+begin_example
-   object 
+   object
    Evaluation took:
      5.221 seconds of real time
      5.196544 seconds of total run time (5.196544 user, 0.000000 system)
@@ -1048,7 +1048,7 @@
 
    #+RESULTS:
    #+begin_example
-   object 
+   object
    Evaluation took:
      4.222 seconds of real time
      4.173852 seconds of total run time (4.173852 user, 0.000000 system)
@@ -1066,3 +1066,238 @@
    #+end_example
 
 ** TODO ~defmethod~ Performance
+
+   + How long does ~defmethod~?
+
+   + How long does a call that causes a miss and discriminating
+     function recomputation take?
+
+* Improvement Ideas
+
+** TODO Handle ranges of lowtags, widetags, layout address
+
+** TODO Bit-test-based decision procedure for lowtags (or just in general)
+   Important for fixnums which should be tested via ~(zerop (logand
+   thing 1))~
+
+** TODO nyef's Remarks
+   #+BEGIN_EXAMPLE
+     <scymtym> beach: i integrated tag-based dispatch into the decision
+               procedure. now it basically wins against PCL for all cases i
+               tested. and this is despite two major optimizations still
+               missing. example of a generated discriminated dispatch function:
+               http://paste.lisp.org/display/355424  [16:43]
+     <phoe> scymtym: I'm no specialist but this looks like some heavily optimized
+            Lisp  [16:49]
+     <scymtym> phoe: i think it doesn't look that optimized. there aren't even any
+               declarations. to me, it is a bit astonishing that something this
+               simple can be on par with PCL (which has crazy optimization tricks)
+                                                                             [16:54]
+     <phoe> scymtym: actually, lots of number arithmetics already looks quite
+            optimized.  [16:55]
+     <beach> scymtym: Great stuff.  [16:58]
+     <phoe> but this news is really crazy now that you speak of it
+     <phoe> this might only mean that the whole "generic dispatch is slower" issue
+            is alleviated  [16:59]
+     <beach> scymtym: I think people are more interested in SBCL than in SICL, and
+             I think they are more interested in a real benchmark than my
+             artificial one.  That's why I think your result is worth a paper.
+     <scymtym> a bit too early for that. PCL does a lot more. if anything, it shows
+               potential
+     <scymtym> phoe: ^
+     <phoe> scymtym: roger.  [17:00]
+     <scymtym> beach: honestly, i can't imagine this becoming relevant to
+               sbcl. making changes, let alone such fundamental ones, in sbcl is
+               hard, at least for me. i don't know how dougk does it, he's like a
+               machine  [17:02]
+     <beach> phoe: I have been saying for a long time that, instead of avoiding
+             generic functions, people should try to improve the technique used for
+             generic dispatch, and more recently, I have been telling people that
+             it will happoen.
+     <beach> happen.  [17:03]
+     <beach> scymtym: Yeah, you may be right.
+     <phoe> beach: I remember you telling this for at least a year.
+     <phoe> s/telling/saying/
+     <scymtym> beach: a variant of this may still be usable for sicl, though. you
+               also have "lowtags" and "stamps" are similar to layout addresses
+                                                                             [17:04]
+     <scymtym> beach: in fact, if more objects are general instances, the
+               lowtag/widetag part would be vastly simpler and faster
+     <beach> scymtym: Not sure what you mean.  The technique was designed for SICL.
+     <beach> scymtym: Yes, the number of tests in SICL would be much smaller.
+                                                                             [17:05]
+     <scymtym> beach: it's a bit of a trade-off, i guess. dispatching exclusively
+               on lowtag is fast, so having many things not be general instances
+               can also be beneficial   [17:07]
+     <beach> I am thinking that, for SICL, I will first test whether I have a tag
+             for general instances, in which case, I invoke the rest of the chain,
+             because that is likely to be the most common case.  [17:08]
+     <beach> The rest of the chain is, get the stamp, etc...
+     <scymtym> beach: the main complication for sbcl seems to be that there are
+               several different ways to extract widetags and layouts. so yeah,
+               only having immediates and general instances would simplify that
+     <beach> I also have CONSes which don't have a stamp.
+     <beach> So if it is not a general instance, I get the stamp a more complicated
+             way, namely through the class defined by the tag.  [17:09]
+     <scymtym> why not use the tag directly in that case?
+     <beach> Sure, yeah, that's probably better.  [17:10]
+     <beach> I don't think that case will be common though.
+     <beach> I don't see much dispatch on character, number, cons.
+     <scymtym> finum and cons come to mind
+     <scymtym> *fixnum
+     <phoe> (hey, I did that today! dispatching on chars)
+     <beach> OK, OK, I get the message. :)  [17:11]
+     <phoe> :)
+     <phoe> oh wait - you mean the system class CHARACTER?
+     <beach> Yes.
+     <phoe> sorry - I did EQL-specializing on chars.
+     <phoe> So a different story.
+     <beach> That's different.
+     <phoe> Please continue. :)
+     <scymtym> EQL-specializers are interesting  [17:12]
+     <scymtym> for many EQL-specializers with symbols, characters or numbers, one
+               could binary search the symbol address, char code or numeric value
+               respectively  [17:15]
+     <phoe> binary-search? how? what do you mean?
+     <phoe> I mean - let's think numbers for a moment, for example.  [17:16]
+     <beach> scymtym: Not a bad idea.
+     <phoe> You need to have a sorted sequence of numbers that you are searching
+            for.
+     <beach> phoe: Read up on the technique in my paper.  It uses binary search so
+             as to make the algorithm logarithmic.
+     <phoe> So if you have 20 methods specializing on numbers 1-20, then... ohhh, I
+            seee.
+     <phoe> You can enumerate all 20 methods in the discriminating function.
+     <phoe> And binsearch until you find the proper one.  [17:17]
+     <phoe> Which gives you logarithmic complexity.
+     <scymtym> the dispatch function is basically an "unrolled" binary search
+     <scymtym> yes
+     <beach> phoe: It's all in the paper, except only for stamps, not for eql
+             specializers.
+     <phoe> But this can be used for all elements that are ordered. Number value
+            and char code is doable, symbol address as well since it's an integer.
+                                                                             [17:18]
+     <scymtym> beach: i think PCL does not always invoke the compiler when the call
+               history is extended. what i currently do requires recompiling the
+               dispatch function whenever the call history changes. do you think
+               this would make the system too slow at "warmimg up"?  [17:19]
+     <beach> scymtym: I don't think so.  First of all, you can delay updating the
+             dispatch function until it is called, as long as you preserve as much
+             of the call history as possible, and as long as computing the dispatch
+             function does not have to call any generic functions.  [17:20]
+     <beach> scymtym: Second, I use a technique call "satiation" that pre-fills the
+             call history of some critical generic functions with an artificial
+             call history consisting of all combinations of classes in the system
+             that will create a hit.  [17:21]
+     <beach> http://metamodular.com/satiation.pdf
+     <scymtym> beach: i'm not worrying about bootstrapping right now. for
+               user-defined generic functions (which will not have a pre-filled
+               call history), each call with previously unseen argument types
+               requires recompilation of the discriminating function  [17:24]
+     <beach> True.
+     <scymtym> actually, the call history could be pre-filled to some extent
+     <scymtym> but that may be a bad idea  [17:25]
+     <nyef`> G'morning all.
+     <beach> scymtym: I do it only for MOP-specified functions, to avoid
+             metastability problems.
+     <nyef`> I see SBCL-specific hacking going on?
+     <beach> Hello nyef`.
+     <beach> nyef`: Yes, you might be selected to implement this in SBCL. :)
+                                                                             [17:26]
+     <scymtym> pre-filling based on the defined methods would reduce the "warm up"
+               time but would also add cases to the decision procedure which may
+               not occur at runtime
+     <beach> Yes, correct.
+     <scymtym> i think nyef` isn't super fond of PCL :)
+     <nyef`> beach: I hope not. I'm almost completely unfamiliar with the PCL code.
+     <nyef`> This tag-testing logic seems bizarre, though.  [17:27]
+     <nyef`> Umm... And, IIRC, not all backends have layouts at fixed addresses?
+                                                                             [17:28]
+     <beach> So I recommend against it, other than when not doing it will create
+             metastability problems.
+     <beach> Oh, sorry!
+     <beach> He is also super fond of "fast" though.
+     <nyef`> Why use GET-LISP-OBJ-ADDRESS to compare to an integer instead of using
+             EQ and a boxed pointer?  [17:29]
+     <scymtym> nyef`: i guess using the clos-hash for other backends for work
+               almost as well  [17:30]
+     <nyef`> Does this pick off fixnums at all?
+     <scymtym> nyef`: what is bizzare about the tag testing?
+     <nyef`> Right, lose the use of GET-LISP-OBJ-ADDRESS and use an EQ test and
+             LOAD-TIME-VALUE to find the layouts.  [17:31]
+     <beach> scymtym: Looks like nyef` would be a better co-author than me.  [17:32]
+     <scymtym> nyef`: for now, each fixnum argument results in a leaf for the
+               corresponding lowtag. i intend to make the decision tree compiler
+               smart enough to eventually reduce the fixnum cases to (zerop
+               (logtest tag 1))
+     <nyef`> There's a reason why you're not "just" trying to use an
+             8-or-16-element CASE here, right?  [17:33]
+     <scymtym> beach: both of you can be of great help. for different aspects, of
+               course
+     <nyef`> Right, fully-unrolled binary search?
+     <nyef`> I'd also make the argument that using the tag names rather than the
+             tag values would be a benefit to readability, and shouldn't cost
+             overmuch in terms of compile time.  [17:35]
+     <scymtym> the decision tree compiler sometimes generates things like (if (=
+               tag a) (if (= tag b) result-1 result-2) result-3), so it's actually
+               a hybrid approach
+     <scymtym> nyef`: sure, many things can be improved, i just cobbled this
+               together in two afternoons to see how beach's technique would
+               perform when employed to sbcl  [17:36]
+     <scymtym> nyef`: inserting symbolic tag names would be a bit more complicated,
+               though. the input to the decision tree compiler are "call history"
+               entries of the form #S(ENTRY :LOWTAGS (3) :WIDETAG NIL :LAYOUT
+               #<LAYOUT for STANDARD-CLASS {203AD103}> :OUTCOMES <method list>)
+               which are created by looking at the argument and taking
+               e.g. LOWTAG-OF, LAYOUT-OF of it  [17:39]
+     <nyef`> Okay, that's fair.
+     <nyef`> And using the fact that OTHER-IMMEDIATE-LOWTAG is two bits wide is
+             unlikely to gain you anything...  [17:40]
+     <scymtym> why would using CASE be better? would you somehow place the more
+               frequently invoked methods at the top?  [17:41]
+     <nyef`> No, I'd try to arrange to compile it as a jump table.
+     <beach> nyef`: You don't want that.
+     <nyef`> Right, destroys branch predictability.
+     <scymtym> it would also require finish pkhuong's computed-goto patch  [17:42]
+     <scymtym> *finishing
+     <beach> nyef`: And a jump table can be huge, unless you do compression, which
+             implies more memory accesses.
+     <nyef`> At least it's not a computed come-from patch. d-:
+     <scymtym> :)
+     <nyef`> Again, 8-or-16-element.
+     <nyef`> (8 for 32-bit backends, 16 for 64-bit backends.)
+     <nyef`> I'd just be using it for the lowtags.
+     <scymtym> i have to go now, will read logs later  [17:43]
+     <scymtym> beach: nyef`: thanks for your feedback
+     <nyef`> scymtym: You're welcome.
+
+     [Sat Sep  9 2017]
+     <nyef`> Hrm. Is this "decision tree compiler" relying on the layouts being
+             immobile? Because if so, it's going to break when they aren't, at
+             which point can we push the layout discrimination to data space rather
+             than code space and get the GC to maintain the invariants that enable
+             binary search?  [18:17]
+     <beach> nyef`: Yes, it does rely on layouts being immobile, as I understand
+             it.  [18:22]
+     <beach> nyef`: scymtym did that because SBCL does not have the concept of a
+             stamp, the way the paper supposes.
+     <nyef`> So, that's a yes to the concern, but no answer on the possible
+             solution?  [18:32]
+     <nyef`> I guess two other possible angles would be to add immobile space to
+             cheneygc and to port all of the remaining cheneygc-only backends to
+             gencgc.  [18:33]
+     <nyef`> ... Alpha (broken anyway because reasons), MIPS (found a Linux kernel
+             bug thanks to this one), and HPPA (never completed).  [18:39]
+     <beach> Or, you can add stamps to your general heap-allocated instances.
+     * beach thinks to himself, "yeah, in your dreams".
+     <nyef`> And immobile-space is x86-64-only.
+     <nyef`> (Not even 64-bit generally, x86-64 only.)  [18:40]
+     <whoman> amd?  [18:42]
+     <nyef`> Right, the AMD-defined 64-bit architecture, not the Itanic.
+     <whoman> ah~ i lost count  [18:44]
+     <nyef`> So, a "stamp"? Basically an immutable (integer) value that corresponds
+             to a class or layout?  [18:45]
+     <scymtym> nyef`: a version of a class in the sense that redefinition and
+               hierarchy changes produce new versions  [19:31]
+     <beach> nyef`: What scymtym says.  [19:38]
+   #+END_EXAMPLE
