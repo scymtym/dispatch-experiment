@@ -4,7 +4,7 @@
   that it would make experimenting with the dispatch technique and
   bechmarking it more comprehensively pretty easy.
 
-  The other motivation is making the benchmark more realistic and
+  The other motivation is making [[http://metamodular.org/generic-dispatch.pdf][the benchmark]] more realistic and
   somewhat fairer:
 
   + Put the discriminating function into a funcallable instance in
