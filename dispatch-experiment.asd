@@ -2,7 +2,7 @@
   :depends-on (:alexandria
                :let-plus
                :utilities.print-tree)
-
+  :serial     t
   :components ((:file "package")
 
                (:file "decision-tree")
