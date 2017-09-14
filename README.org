@@ -733,7 +733,7 @@
 
    #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
      (defparameter *standard-object-layout-gf*
-       (prepare-standard-object-layout-address-vs-standard-gf))
+       (prepare-standard-object-layout-address-vs-standard-gf *standard-object-classes*))
    #+END_SRC
 
    #+RESULTS:
@@ -954,7 +954,7 @@
 
    #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
      (run-standard-object-layout-address-vs-standard-gf
-      *standard-object-layout-gf*)
+      *standard-object-layout-gf* (make-instance 'd2))
    #+END_SRC
 
    #+RESULTS:
@@ -975,3 +975,94 @@
      1,216 bytes consed
 
    #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (defparameter *standard-object-layout-gf/few*
+       (prepare-standard-object-layout-address-vs-standard-gf (subseq *standard-object-classes* 0 4)))
+   #+END_SRC
+
+   #+RESULTS:
+   : Assuming argument is an instance: T
+   : Assuming argument is an instance: T
+   : Assuming argument is an instance: T
+   : Assuming argument is an instance: T
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (sb-disassem:disassemble-code-component
+       (sb-kernel:funcallable-instance-fun *standard-object-layout-gf/few*))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   ; Size: 208 bytes. Origin: #x1002610A70 (segment 1 of 2)
+   ; A70:       .ENTRY (LAMBDA (OBJECT))()                       ; FUNCTION
+   ; AA0:       8F4508           POP QWORD PTR [RBP+8]
+   ; AA3:       488D65F8         LEA RSP, [RBP-8]
+   ; AA7:       488BCA           MOV RCX, RDX
+   ; Origin #x1002610AAA (segment 2 of 2)
+   ; AAA:       8B4101           MOV EAX, [RCX+1]                ; no-arg-parsing entry point
+   ; AAD:       483D04614620     CMP RAX, 541483268
+   ; AB3:       734D             JNB L3
+   ; AB5:       488D1400         LEA RDX, [RAX+RAX]
+   ; AB9:       4881FA06C28C40   CMP RDX, 1082966534
+   ; AC0:       7C10             JL L1
+   ; AC2:       488B0D6FFFFFFF   MOV RCX, [RIP-145]              ; '((B1))
+   ; AC9: L0:   488BD1           MOV RDX, RCX
+   ; ACC:       488BE5           MOV RSP, RBP
+   ; ACF:       F8               CLC
+   ; AD0:       5D               POP RBP
+   ; AD1:       C3               RET
+   ; AD2: L1:   48D1E0           SHL RAX, 1
+   ; AD5:       483D06C08C40     CMP RAX, 1082966022
+   ; ADB:       7509             JNE L2
+   ; ADD:       488B0D5CFFFFFF   MOV RCX, [RIP-164]              ; '((A1))
+   ; AE4:       EBE3             JMP L0
+   ; AE6: L2:   488B155BFFFFFF   MOV RDX, [RIP-165]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {1002222A7B}>
+   ; AED:       488BF9           MOV RDI, RCX
+   ; AF0:       488B0559FFFFFF   MOV RAX, [RIP-167]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; AF7:       B904000000       MOV ECX, 4
+   ; AFC:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; AFF:       FF6009           JMP QWORD PTR [RAX+9]
+   ; B02: L3:   483D03624620     CMP RAX, 541483523
+   ; B08:       7509             JNE L4
+   ; B0A:       488B0D47FFFFFF   MOV RCX, [RIP-185]              ; '((C1))
+   ; B11:       EBB6             JMP L0
+   ; B13: L4:   483D03634620     CMP RAX, 541483779
+   ; B19:       7509             JNE L5
+   ; B1B:       488B0D3EFFFFFF   MOV RCX, [RIP-194]              ; '((D1))
+   ; B22:       EBA5             JMP L0
+   ; B24: L5:   488B153DFFFFFF   MOV RDX, [RIP-195]              ; #<FUNCTION (LAMBDA
+                                                                 ;                #) {1002222A7B}>
+   ; B2B:       488BF9           MOV RDI, RCX
+   ; B2E:       488B051BFFFFFF   MOV RAX, [RIP-229]              ; #<SB-KERNEL:FDEFN CACHE-MISS>
+   ; B35:       B904000000       MOV ECX, 4
+   ; B3A:       FF7508           PUSH QWORD PTR [RBP+8]
+   ; B3D:       FF6009           JMP QWORD PTR [RAX+9]
+   #+end_example
+
+   #+BEGIN_SRC lisp :exports both :results output :package dispatch-experiment
+     (run-standard-object-layout-address-vs-standard-gf
+      *standard-object-layout-gf/few* #'standard-gf2/few (make-instance 'c1))
+   #+END_SRC
+
+   #+RESULTS:
+   #+begin_example
+   object 
+   Evaluation took:
+     4.222 seconds of real time
+     4.173852 seconds of total run time (4.173852 user, 0.000000 system)
+     98.86% CPU
+     12,634,589,778 processor cycles
+     0 bytes consed
+
+   Evaluation took:
+     5.806 seconds of real time
+     5.740733 seconds of total run time (5.728717 user, 0.012016 system)
+     98.88% CPU
+     17,379,199,164 processor cycles
+     0 bytes consed
+
+   #+end_example
+
+** TODO ~defmethod~ Performance
