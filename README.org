@@ -70,8 +70,9 @@
 
    Since it will be used in both implementations here is a brief
    demonstration of the decision tree generator (full code in
-   [[file:decision-tree.lisp]], [[file:interval-decision-procedure.lisp]] and
-   [[file:typep-decision-procedure.lisp]]):
+   [[file:src/decision-tree.lisp]],
+   [[file:src/interval-decision-procedure.lisp]] and
+   [[file:src/typep-decision-procedure.lisp]]):
 
    + For intervals ::
 
