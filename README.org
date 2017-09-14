@@ -4,6 +4,13 @@
   that it would make experimenting with the dispatch technique and
   bechmarking it more comprehensively pretty easy.
 
+  Also SBCL's new immobile space feature ideally suited for this
+  dispatch technique: SBCL's equivalent of "general instances" with
+  class and "rack" pointers in [[http://metamodular.org/generic-dispatch.pdf][the paper]] are "instances" and
+  "layouts". The latter are placed in immobile space where the gc does
+  not move them. The idea is to use layout addresses where "stamps"
+  are used in the paper.
+
   The other motivation is making [[http://metamodular.org/generic-dispatch.pdf][the benchmark]] more realistic and
   somewhat fairer:
 
@@ -36,12 +43,6 @@
 
     compiles to tests which "fall through" in the alternative
     case. This executes much faster than a real decision tree.
-
-  + Exploit SBCL's new immobile space: SBCL's equivalent of "general
-    instances" with class and "rack" pointers in the paper are
-    "instances" and "layouts". The latter are placed in immobile space
-    where the gc does not move them. The idea is to use layout
-    addresses where "stamps" are used in the paper.
 
 * Code
 
