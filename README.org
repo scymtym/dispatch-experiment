@@ -79,7 +79,7 @@
          (let ((interface (make-instance 'interval-dispatch :number-var 'number)))
            (make-decision-tree interface '((1 . 5) (0 . 10) (7 . 7) (8 . *)))))
 
-       (print-decision-tree *standard-output* *interval-tree*)
+       (print-decision-tree *interval-tree*)
      #+END_SRC
 
      #+RESULTS:
@@ -130,7 +130,7 @@
          (let ((interface (make-instance 'type-discrimination :object-var 'object)))
            (make-decision-tree interface '(integer number single-float string class))))
 
-         (print-decision-tree *standard-output* *type-tree*)
+         (print-decision-tree *type-tree*)
      #+END_SRC
 
      #+RESULTS:
@@ -389,7 +389,7 @@
                (map 'list (lambda+ ((layout . classes))
                             (list (sb-vm::get-lisp-obj-address layout) layout classes))
                     (call-history *generic-layout-gf*)))
-       (print-decision-tree *standard-output* tree))
+       (print-decision-tree tree))
    #+END_SRC
 
    #+RESULTS:
@@ -765,7 +765,7 @@
                (map 'list (lambda+ ((layout . classes))
                             (list (sb-vm::get-lisp-obj-address layout) layout classes))
                     (call-history *standard-object-layout-gf*)))
-       (print-decision-tree *standard-output* tree))
+       (print-decision-tree tree))
    #+END_SRC
 
    #+RESULTS:

@@ -173,7 +173,7 @@
 
 ;;; Debugging
 
-(defun print-decision-tree (stream tree)
+(defun print-decision-tree (tree &optional (stream *standard-output*))
   (utilities.print-tree:print-tree
    stream tree
    (utilities.print-tree:make-node-printer
