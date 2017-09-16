@@ -1,6 +1,6 @@
 * Motivation
 
-  I made the decision tree compiler for other reasons and realized
+  I made the decision tree generator for other reasons and realized
   that it would make experimenting with the dispatch technique and
   bechmarking it more comprehensively pretty easy.
 
@@ -66,10 +66,10 @@
                    fleshed-out, SBCL-adapted version of the generic
                    function dispatch presented in the paper.
 
-** Decision Tree Compiler
+** Decision Tree Generator
 
    Since it will be used in both implementations here is a brief
-   demonstration of the decision tree compiler (full code in
+   demonstration of the decision tree generator (full code in
    [[file:decision-tree.lisp]], [[file:interval-decision-procedure.lisp]] and
    [[file:typep-decision-procedure.lisp]]):
 
