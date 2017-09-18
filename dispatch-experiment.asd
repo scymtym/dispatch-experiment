@@ -14,7 +14,11 @@
 
                              ;;
                              (:file "interval-decision-procedure")
+
+                             ;; Layout generic function
+                             (:file "call-history")
                              (:file "layout-generic-function")
 
+                             ;; Benchmark stuff
                              (:file "benchmark-generic")
                              (:file "benchmark-only-standard-objects")))))
