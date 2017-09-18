@@ -1103,7 +1103,14 @@
    + How long does a call that causes a miss and discriminating
      function recomputation take?
 
-* Improvement Ideas
+* Open Questions and Improvement Ideas
+
+** TODO ~vector~ Specializer
+
+   As soon as a ~vector~ specializer is involved, PCL seems to switch
+   to the (generally much slower) "discrimination net"-based dispatch,
+   although a ~vector~ layout exists. Investigate why. Does this
+   affect our approach?
 
 ** TODO Handle ranges of lowtags, widetags, layout address
 
