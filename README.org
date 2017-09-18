@@ -283,6 +283,32 @@
                    (cache-miss instance object))))
    #+END_SRC
 
+** TODO Class Redefinition and Obsolete Instances
+
+   SBCL generates a new layout when a class is initially created and
+   whenever it is redefined (with actual changes):
+
+   #+BEGIN_SRC lisp
+     CL-USER> (defclass a () ())
+     #<STANDARD-CLASS COMMON-LISP-USER::A>
+     CL-USER> (sb-kernel:get-lisp-obj-address (sb-kernel:layout-of (make-instance 'a)))
+     542129411
+     CL-USER> (sb-kernel:get-lisp-obj-address (sb-kernel:layout-of (make-instance 'a)))
+     542129411
+     CL-USER> (defclass a () ()) ; unchanged
+     #<STANDARD-CLASS COMMON-LISP-USER::A>
+     CL-USER> (sb-kernel:get-lisp-obj-address (sb-kernel:layout-of (make-instance 'a)))
+     542129411
+     CL-USER> (defclass a () ((foo)))
+     #<STANDARD-CLASS COMMON-LISP-USER::A>
+     CL-USER> (sb-kernel:get-lisp-obj-address (sb-kernel:layout-of (make-instance 'a)))
+     542129667
+   #+END_SRC
+
+   This means obsolete instances can be trapped by removing the old
+   layout (and other affected layouts) from relevant call histories
+   and recompiling the discriminating functions.
+
 * Results
 
 ** Benchmark for General Lisp Objects
