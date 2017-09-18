@@ -1,3 +1,8 @@
+#+TITLE:   Steel Beach Common Lisp -- Robert Strandh's "Fast Generic Dispatch" for SBCL
+#+AUTHOR:  Jan Moringen
+#+EMAIL:   jmoringe@techfak.uni-bielefeld.de
+#+STARTUP: content
+
 * Motivation
 
   I made the decision tree generator for other reasons and realized
